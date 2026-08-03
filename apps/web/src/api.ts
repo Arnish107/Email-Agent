@@ -75,6 +75,14 @@ async function api<T>(path: string, init?: RequestInit): Promise<T> {
   return data as T;
 }
 
+export type ProviderInfo = {
+  id: string;
+  label: string;
+  scope?: string;
+  configured: boolean;
+  note?: string;
+};
+
 export const client = {
   me: () => api<{ user: User }>("/api/auth/me"),
   login: (email: string) =>
@@ -85,18 +93,13 @@ export const client = {
   logout: () => api<{ ok: boolean }>("/api/auth/logout", { method: "POST" }),
   mailboxes: () => api<{ mailboxes: Mailbox[] }>("/api/mailboxes"),
   providers: () =>
-    api<{
-      providers: Array<{
-        id: string;
-        label: string;
-        configured: boolean;
-        note?: string;
-      }>;
-    }>("/api/mailboxes/providers"),
+    api<{ providers: ProviderInfo[] }>("/api/mailboxes/providers"),
   connectFixture: () =>
     api<{ mailboxId: string; email: string }>("/api/mailboxes/fixture/connect", {
       method: "POST",
     }),
+  disconnectMailbox: (id: string) =>
+    api<{ ok: boolean }>(`/api/mailboxes/${id}`, { method: "DELETE" }),
   startGmailOAuth: () =>
     api<{ url: string }>("/api/mailboxes/oauth/gmail/start"),
   startScan: (mailboxId: string, days: number, query?: string) =>

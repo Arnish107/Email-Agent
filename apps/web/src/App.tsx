@@ -16,7 +16,7 @@ function fmtDate(value?: string | null) {
 }
 
 function LoginScreen({ onLogin }: { onLogin: (user: User) => void }) {
-  const [email, setEmail] = useState("reviewer@example.com");
+  const [email, setEmail] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -40,8 +40,9 @@ function LoginScreen({ onLogin }: { onLogin: (user: User) => void }) {
         <div className="brand">
           <h1>Email Task Agent</h1>
           <p>
-            Prototype review console for compliance tasks extracted from mailbox
-            scans. Nothing becomes a CiviSight task until a human approves it.
+            Sign in with your work email, connect your Gmail account in read-only
+            mode, and review compliance tasks before anything is exported to
+            CiviSight.
           </p>
         </div>
         {error && <div className="banner error">{error}</div>}
@@ -51,11 +52,13 @@ function LoginScreen({ onLogin }: { onLogin: (user: User) => void }) {
             value={email}
             onChange={(e) => setEmail(e.target.value)}
             type="email"
+            placeholder="you@yourcounty.gov"
             required
+            autoFocus
           />
         </label>
         <button className="btn" disabled={busy} type="submit">
-          {busy ? "Signing in…" : "Sign in"}
+          {busy ? "Signing in…" : "Continue"}
         </button>
       </form>
     </div>
@@ -307,46 +310,93 @@ function Dashboard({
   const [jobs, setJobs] = useState<ScanJob[]>([]);
   const [candidates, setCandidates] = useState<Candidate[]>([]);
   const [entities, setEntities] = useState<Entity[]>([]);
+  const [gmailReady, setGmailReady] = useState(false);
   const [selectedMailbox, setSelectedMailbox] = useState("");
-  const [days, setDays] = useState(30);
-  const [queryPreview, setQueryPreview] = useState("newer_than:30d");
+  const [days, setDays] = useState(7);
+  const [queryPreview, setQueryPreview] = useState("newer_than:7d");
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [filter, setFilter] = useState("needs_review");
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [exportJson, setExportJson] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [showOfflineSample, setShowOfflineSample] = useState(false);
 
   const activeMailbox = useMemo(
     () => mailboxes.find((m) => m.id === selectedMailbox),
     [mailboxes, selectedMailbox],
   );
+  const gmailMailboxes = useMemo(
+    () => mailboxes.filter((m) => m.provider === "gmail" && m.status === "active"),
+    [mailboxes],
+  );
+  const scanMailboxes = useMemo(() => {
+    const active = mailboxes.filter((m) => m.status === "active");
+    const gmail = active.filter((m) => m.provider === "gmail");
+    if (gmail.length > 0) return gmail;
+    // Sample inbox only appears in the scan list when the offline panel is open
+    if (showOfflineSample) {
+      return active.filter((m) => m.provider === "fixture");
+    }
+    return [];
+  }, [mailboxes, showOfflineSample]);
+
+  function pickPreferredMailbox(
+    list: Mailbox[],
+    currentId: string,
+  ): string {
+    const gmail = list.find((m) => m.provider === "gmail" && m.status === "active");
+    if (gmail) return gmail.id;
+    if (
+      currentId &&
+      list.some(
+        (m) =>
+          m.id === currentId &&
+          m.status === "active" &&
+          m.provider === "fixture" &&
+          showOfflineSample,
+      )
+    ) {
+      return currentId;
+    }
+    return "";
+  }
+
+  function mailboxLabel(m: Mailbox): string {
+    if (m.provider === "gmail") return `Gmail · ${m.email_address}`;
+    if (m.provider === "fixture") return `Sample inbox (offline) · ${m.email_address}`;
+    return `${m.provider} · ${m.email_address}`;
+  }
 
   async function refresh() {
-    const [mb, sc, cand, ents] = await Promise.all([
+    const [mb, sc, cand, ents, providers] = await Promise.all([
       client.mailboxes(),
       client.scans(),
       client.candidates(filter || undefined),
       client.entities(),
+      client.providers(),
     ]);
     setMailboxes(mb.mailboxes);
     setJobs(sc.jobs);
     setCandidates(cand.candidates);
     setEntities(ents.entities);
-    if (!selectedMailbox && mb.mailboxes[0]) {
-      setSelectedMailbox(mb.mailboxes[0].id);
-    }
+    setGmailReady(
+      Boolean(providers.providers.find((p) => p.id === "gmail")?.configured),
+    );
+    setSelectedMailbox((current) => pickPreferredMailbox(mb.mailboxes, current));
   }
 
   useEffect(() => {
     const params = new URLSearchParams(window.location.search);
     if (params.get("oauth") === "success") {
-      setMessage("Gmail mailbox connected.");
+      setMessage("Gmail connected with read-only access.");
       window.history.replaceState({}, "", "/");
+      refresh().catch(() => undefined);
     } else if (params.get("oauth") === "error") {
-      setError(params.get("message") || "OAuth failed");
+      setError(params.get("message") || "Gmail connection failed");
       window.history.replaceState({}, "", "/");
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   useEffect(() => {
@@ -358,7 +408,10 @@ function Dashboard({
 
   useEffect(() => {
     const mailbox = mailboxes.find((m) => m.id === selectedMailbox);
-    if (!mailbox) return;
+    if (!mailbox) {
+      setQueryPreview(`newer_than:${days}d`);
+      return;
+    }
     if (mailbox.provider === "gmail") {
       setQueryPreview(`newer_than:${days}d`);
     } else {
@@ -382,9 +435,9 @@ function Dashboard({
         <div className="brand">
           <h1>Email Task Agent</h1>
           <p>
-            Connect a mailbox, scan a bounded window, review extracted compliance
-            candidates, then export CiviSight-compatible JSON. No silent task
-            creation.
+            Scan your real Gmail inbox for compliance actions, review evidence,
+            then export approved items for CiviSight. Tasks are never created
+            without your approval.
           </p>
         </div>
         <div className="row">
@@ -407,12 +460,46 @@ function Dashboard({
 
       <div className="grid grid-2">
         <section className="panel stack">
-          <h2>Mailbox & scan</h2>
+          <h2>1. Connect Gmail</h2>
+
+          {!gmailReady && (
+            <div className="banner error">
+              Gmail OAuth is not configured yet. Add your Google Cloud OAuth
+              Client ID and Client Secret to <code>.env</code>, then restart the
+              app:
+              <ol style={{ margin: "8px 0 0", paddingLeft: "1.2rem" }}>
+                <li>
+                  Create an OAuth client at{" "}
+                  <a
+                    href="https://console.cloud.google.com/apis/credentials"
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    Google Cloud Credentials
+                  </a>
+                </li>
+                <li>Enable the Gmail API for that project</li>
+                <li>
+                  Application type: <strong>Web application</strong>
+                </li>
+                <li>
+                  Authorized redirect URI:{" "}
+                  <code>http://localhost:4000/api/oauth/gmail/callback</code>
+                </li>
+                <li>
+                  Set <code>GOOGLE_CLIENT_ID</code> and{" "}
+                  <code>GOOGLE_CLIENT_SECRET</code> in <code>.env</code>
+                </li>
+              </ol>
+              Paste those two values here in chat and I can wire them in for you.
+            </div>
+          )}
+
           <div className="row">
             <button
               className="btn"
               type="button"
-              disabled={busy}
+              disabled={busy || !gmailReady}
               onClick={async () => {
                 setBusy(true);
                 setError(null);
@@ -426,43 +513,123 @@ function Dashboard({
                 }
               }}
             >
-              Connect Gmail (readonly)
+              {gmailMailboxes.length
+                ? "Reconnect Gmail (readonly)"
+                : "Connect Gmail (readonly)"}
             </button>
-            <button
-              className="btn secondary"
-              type="button"
-              disabled={busy}
-              onClick={async () => {
-                setBusy(true);
-                try {
-                  await client.connectFixture();
-                  setMessage("Fixture mailbox connected.");
-                  await refresh();
-                } catch (err) {
-                  setError(err instanceof Error ? err.message : "Failed");
-                } finally {
-                  setBusy(false);
-                }
-              }}
-            >
-              Use fixture mailbox
-            </button>
+            <span className="pill muted">scope: gmail.readonly</span>
           </div>
 
-          <label>
-            Connected mailbox
-            <select
-              value={selectedMailbox}
-              onChange={(e) => setSelectedMailbox(e.target.value)}
-            >
-              <option value="">Select…</option>
-              {mailboxes.map((m) => (
-                <option key={m.id} value={m.id}>
-                  {m.provider} · {m.email_address} ({m.status})
+          {gmailMailboxes.length > 0 ? (
+            <div className="banner">
+              Connected:{" "}
+              {gmailMailboxes.map((m) => m.email_address).join(", ")}
+            </div>
+          ) : (
+            <div className="banner">
+              No Gmail connected yet. Finish Google sign-in (including 2-step
+              verification if prompted), then you can scan that mailbox.
+            </div>
+          )}
+
+          <button
+            className="btn secondary"
+            type="button"
+            onClick={() => setShowOfflineSample((v) => !v)}
+          >
+            {showOfflineSample ? "Hide offline sample" : "Offline sample inbox…"}
+          </button>
+
+          {showOfflineSample && (
+            <div className="stack">
+              <p className="meta" style={{ margin: 0 }}>
+                Bundled sample emails for offline testing only. This is not your
+                real mailbox.
+              </p>
+              <div className="row">
+                <button
+                  className="btn secondary"
+                  type="button"
+                  disabled={busy}
+                  onClick={async () => {
+                    setBusy(true);
+                    try {
+                      await client.connectFixture();
+                      setMessage("Offline sample inbox connected.");
+                      await refresh();
+                    } catch (err) {
+                      setError(err instanceof Error ? err.message : "Failed");
+                    } finally {
+                      setBusy(false);
+                    }
+                  }}
+                >
+                  Connect sample inbox
+                </button>
+                {mailboxes.some(
+                  (m) => m.provider === "fixture" && m.status === "active",
+                ) && (
+                  <button
+                    className="btn danger"
+                    type="button"
+                    disabled={busy}
+                    onClick={async () => {
+                      setBusy(true);
+                      try {
+                        const fixture = mailboxes.find(
+                          (m) => m.provider === "fixture" && m.status === "active",
+                        );
+                        if (fixture) {
+                          await client.disconnectMailbox(fixture.id);
+                          setMessage("Sample inbox disconnected.");
+                          await refresh();
+                        }
+                      } catch (err) {
+                        setError(err instanceof Error ? err.message : "Failed");
+                      } finally {
+                        setBusy(false);
+                      }
+                    }}
+                  >
+                    Disconnect sample
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+
+          <h2>2. Scan mailbox</h2>
+
+          {gmailMailboxes.length === 0 && scanMailboxes.length === 0 ? (
+            <div className="empty">
+              Connect Gmail above first. The scan target will appear here
+              automatically.
+            </div>
+          ) : (
+            <label>
+              Mailbox to scan
+              <select
+                value={selectedMailbox}
+                onChange={(e) => setSelectedMailbox(e.target.value)}
+              >
+                <option value="" disabled>
+                  Select a mailbox…
                 </option>
-              ))}
-            </select>
-          </label>
+                {scanMailboxes.map((m) => (
+                  <option key={m.id} value={m.id}>
+                    {mailboxLabel(m)}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+
+          {activeMailbox?.provider === "fixture" && (
+            <div className="banner error">
+              You are scanning the offline sample inbox, not real Gmail. Connect
+              Gmail above, or disconnect the sample inbox.
+            </div>
+          )}
 
           <div className="row">
             <label style={{ flex: 1 }}>
@@ -476,7 +643,7 @@ function Dashboard({
               />
             </label>
             <label style={{ flex: 2 }}>
-              Provider query preview
+              {activeMailbox?.provider === "gmail" ? "Gmail query" : "Scan query"}
               <input value={queryPreview} readOnly />
             </label>
           </div>
@@ -484,7 +651,12 @@ function Dashboard({
           <button
             className="btn"
             type="button"
-            disabled={!selectedMailbox || busy}
+            disabled={
+              !selectedMailbox ||
+              busy ||
+              (activeMailbox?.provider !== "gmail" &&
+                activeMailbox?.provider !== "fixture")
+            }
             onClick={async () => {
               setBusy(true);
               setError(null);
@@ -494,7 +666,7 @@ function Dashboard({
                   days,
                   activeMailbox?.provider === "gmail" ? queryPreview : undefined,
                 );
-                setMessage(`Scan started (${res.jobId}) with query ${res.query}`);
+                setMessage(`Scan started — query: ${res.query}`);
                 await refresh();
               } catch (err) {
                 setError(err instanceof Error ? err.message : "Scan failed");
@@ -508,7 +680,7 @@ function Dashboard({
 
           <h3>Scan history</h3>
           {jobs.length === 0 ? (
-            <div className="empty">No scans yet.</div>
+            <div className="empty">No scans yet. Connect Gmail, then start a scan.</div>
           ) : (
             <table className="table">
               <thead>
@@ -542,7 +714,7 @@ function Dashboard({
 
         <section className="panel stack">
           <div className="row" style={{ justifyContent: "space-between" }}>
-            <h2>Review queue</h2>
+            <h2>3. Review queue</h2>
             <select value={filter} onChange={(e) => setFilter(e.target.value)}>
               <option value="needs_review">needs_review</option>
               <option value="approved">approved</option>
@@ -580,7 +752,10 @@ function Dashboard({
 
           <div className="candidate-list">
             {candidates.length === 0 ? (
-              <div className="empty">No candidates in this filter.</div>
+              <div className="empty">
+                No candidates yet. After a Gmail scan finishes, actionable emails
+                appear here for review.
+              </div>
             ) : (
               candidates.map((c) => (
                 <button
