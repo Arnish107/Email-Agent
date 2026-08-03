@@ -8,6 +8,26 @@ import {
   type User,
 } from "./api";
 
+function buildImportantGmailQuery(days: number): string {
+  const window = `newer_than:${Math.min(90, Math.max(1, days))}d`;
+  const signals = [
+    "deadline",
+    "due",
+    '"action required"',
+    '"please submit"',
+    '"please complete"',
+    "compliance",
+    "certification",
+    "filing",
+    "grant",
+    "audit",
+    "report due",
+    "must submit",
+    "portal",
+  ].join(" OR ");
+  return `${window} (${signals}) -category:promotions -category:social -category:forums`;
+}
+
 function fmtDate(value?: string | null) {
   if (!value) return "—";
   const d = new Date(value);
@@ -313,7 +333,7 @@ function Dashboard({
   const [gmailReady, setGmailReady] = useState(false);
   const [selectedMailbox, setSelectedMailbox] = useState("");
   const [days, setDays] = useState(7);
-  const [queryPreview, setQueryPreview] = useState("newer_than:7d");
+  const [queryPreview, setQueryPreview] = useState(buildImportantGmailQuery(7));
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [filter, setFilter] = useState("needs_review");
   const [message, setMessage] = useState<string | null>(null);
@@ -408,15 +428,11 @@ function Dashboard({
 
   useEffect(() => {
     const mailbox = mailboxes.find((m) => m.id === selectedMailbox);
-    if (!mailbox) {
-      setQueryPreview(`newer_than:${days}d`);
+    if (!mailbox || mailbox.provider === "gmail") {
+      setQueryPreview(buildImportantGmailQuery(days));
       return;
     }
-    if (mailbox.provider === "gmail") {
-      setQueryPreview(`newer_than:${days}d`);
-    } else {
-      setQueryPreview(`last_${days}_days`);
-    }
+    setQueryPreview(`important_last_${days}_days`);
   }, [selectedMailbox, days, mailboxes]);
 
   useEffect(() => {
@@ -643,10 +659,16 @@ function Dashboard({
               />
             </label>
             <label style={{ flex: 2 }}>
-              {activeMailbox?.provider === "gmail" ? "Gmail query" : "Scan query"}
+              {activeMailbox?.provider === "gmail"
+                ? "Important-mail Gmail query"
+                : "Scan query"}
               <input value={queryPreview} readOnly />
             </label>
           </div>
+          <p className="meta" style={{ margin: 0 }}>
+            Scans only higher-signal messages (deadlines, required actions,
+            compliance keywords) and skips promotions/social/FYI noise.
+          </p>
 
           <button
             className="btn"

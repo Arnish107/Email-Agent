@@ -3,6 +3,7 @@ import { nanoid } from "nanoid";
 import { writeAuditLog } from "../audit/log.js";
 import { requireAuth } from "../auth/session.js";
 import { pool } from "../db/pool.js";
+import { buildImportantGmailQuery } from "../extraction/importance.js";
 import { enqueueScanJob } from "../jobs/scanWorker.js";
 
 export const scansRouter = Router();
@@ -35,8 +36,8 @@ scansRouter.post("/", async (req, res) => {
   const query =
     customQuery?.trim() ||
     (mailbox.provider === "gmail"
-      ? `newer_than:${days}d`
-      : `last_${days}_days`);
+      ? buildImportantGmailQuery(days)
+      : `important_last_${days}_days`);
 
   const id = nanoid();
   await pool.query(
@@ -50,7 +51,7 @@ scansRouter.post("/", async (req, res) => {
     userId: req.user!.id,
     mailboxConnectionId: mailboxId,
     eventType: "scan_started",
-    details: { jobId: id, query, days },
+    details: { jobId: id, query, days, importantOnly: true },
   });
 
   enqueueScanJob(id);

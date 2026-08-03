@@ -4,6 +4,10 @@ import { bodyHash, decryptSecret, encryptSecret, sha256 } from "../crypto/tokens
 import { findCandidateDuplicates } from "../duplicates/detect.js";
 import { strongEntityMatch } from "../entity/mapping.js";
 import { extractTasks } from "../extraction/agent.js";
+import {
+  isImportantCandidate,
+  isImportantEmail,
+} from "../extraction/importance.js";
 import { pool } from "../db/pool.js";
 import { getProvider } from "../providers/index.js";
 import { refreshGmailAccessToken } from "../providers/gmail.js";
@@ -105,6 +109,10 @@ export async function processScanJob(jobId: string): Promise<void> {
 
     for (const messageId of messageIds) {
       const email = await provider.fetchMessage(accessToken, messageId);
+      if (!isImportantEmail(email)) {
+        continue;
+      }
+
       const hash = bodyHash(email.bodyText);
       const extraction = await extractTasks(email);
 
@@ -113,6 +121,10 @@ export async function processScanJob(jobId: string): Promise<void> {
       }
 
       for (const candidate of extraction.candidates) {
+        if (!isImportantCandidate(candidate)) {
+          continue;
+        }
+
         const dupes = findCandidateDuplicates(
           {
             title: candidate.title,
