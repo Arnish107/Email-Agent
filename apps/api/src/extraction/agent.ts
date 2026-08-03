@@ -24,7 +24,61 @@ function emailForModel(email: NormalizedEmail) {
   };
 }
 
-async function llmExtract(email: NormalizedEmail): Promise<ExtractionResult> {
+function extractJsonObject(text: string): unknown {
+  const trimmed = text.trim();
+  try {
+    return JSON.parse(trimmed);
+  } catch {
+    const start = trimmed.indexOf("{");
+    const end = trimmed.lastIndexOf("}");
+    if (start >= 0 && end > start) {
+      return JSON.parse(trimmed.slice(start, end + 1));
+    }
+    throw new Error("Model response was not valid JSON");
+  }
+}
+
+async function geminiExtract(email: NormalizedEmail): Promise<ExtractionResult> {
+  const prompt = `${EXTRACTION_SYSTEM_PROMPT}
+
+${buildExtractionUserPrompt(JSON.stringify(emailForModel(email), null, 2))}
+
+Return only valid JSON.`;
+
+  const url = `${config.gemini.baseUrl}/models/${config.gemini.model}:generateContent?key=${encodeURIComponent(config.gemini.apiKey)}`;
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      contents: [{ role: "user", parts: [{ text: prompt }] }],
+      generationConfig: {
+        temperature: 0,
+        responseMimeType: "application/json",
+      },
+    }),
+  });
+
+  if (!res.ok) {
+    const text = await res.text();
+    throw new Error(`Gemini extraction failed (${res.status}): ${text}`);
+  }
+
+  const data = (await res.json()) as {
+    candidates?: Array<{ content?: { parts?: Array<{ text?: string }> } }>;
+  };
+  const content = data.candidates?.[0]?.content?.parts
+    ?.map((p) => p.text ?? "")
+    .join("")
+    .trim();
+  if (!content) {
+    throw new Error("Gemini returned empty content");
+  }
+  return validateExtractionResult(extractJsonObject(content));
+}
+
+async function openaiCompatibleExtract(
+  email: NormalizedEmail,
+): Promise<ExtractionResult> {
   const payload = {
     model: config.openai.model,
     temperature: 0,
@@ -59,11 +113,18 @@ async function llmExtract(email: NormalizedEmail): Promise<ExtractionResult> {
   if (!content) {
     throw new Error("LLM returned empty content");
   }
-  return validateExtractionResult(JSON.parse(content));
+  return validateExtractionResult(extractJsonObject(content));
+}
+
+async function llmExtract(email: NormalizedEmail): Promise<ExtractionResult> {
+  if (config.gemini.apiKey) {
+    return geminiExtract(email);
+  }
+  return openaiCompatibleExtract(email);
 }
 
 export async function extractTasks(email: NormalizedEmail): Promise<ExtractionResult> {
-  if (!config.openai.apiKey) {
+  if (!config.gemini.apiKey && !config.openai.apiKey) {
     return fallbackExtract(email);
   }
   try {

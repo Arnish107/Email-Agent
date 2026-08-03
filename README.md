@@ -111,7 +111,9 @@ See `.env.example`.
 | `TOKEN_ENCRYPTION_KEY` | 64-hex-char key for OAuth token encryption |
 | `DATABASE_URL` | Postgres connection string |
 | `GOOGLE_CLIENT_*` | Gmail OAuth |
-| `OPENAI_API_KEY` | Optional structured extraction |
+| `GEMINI_API_KEY` | Preferred LLM for extraction (Google Gemini) |
+| `GEMINI_MODEL` | Gemini model id (default `gemini-2.0-flash`) |
+| `OPENAI_API_KEY` | Optional OpenAI-compatible extraction fallback |
 | `ENABLE_CIVISIGHT_POSTING` | Must be `true` to POST tasks |
 | `CIVISIGHT_API_BASE_URL` / `CIVISIGHT_ADMIN_TOKEN` | Optional upstream posting |
 

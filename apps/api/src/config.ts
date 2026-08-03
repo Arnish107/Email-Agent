@@ -50,6 +50,13 @@ export const config = {
     baseUrl: process.env.OPENAI_BASE_URL ?? "https://api.openai.com/v1",
     model: process.env.OPENAI_MODEL ?? "gpt-4o-mini",
   },
+  gemini: {
+    apiKey: process.env.GEMINI_API_KEY ?? "",
+    model: process.env.GEMINI_MODEL ?? "gemini-2.0-flash",
+    baseUrl:
+      process.env.GEMINI_BASE_URL ??
+      "https://generativelanguage.googleapis.com/v1beta",
+  },
   enableFixtureProvider: (process.env.ENABLE_FIXTURE_PROVIDER ?? "true") === "true",
   civisight: {
     enabled: (process.env.ENABLE_CIVISIGHT_POSTING ?? "false") === "true",
