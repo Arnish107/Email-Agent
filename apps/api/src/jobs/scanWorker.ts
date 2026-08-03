@@ -19,6 +19,7 @@ type MailboxRow = {
   email_address: string;
   access_token_ciphertext: string;
   refresh_token_ciphertext: string | null;
+  connection_meta: Record<string, unknown> | null;
   status: string;
 };
 
@@ -27,9 +28,12 @@ async function resolveAccessToken(mailbox: MailboxRow): Promise<string> {
   if (mailbox.provider === "fixture") {
     return access || "fixture-token";
   }
+  if (mailbox.provider === "imap") {
+    // Stored app password / mailbox password (encrypted at rest)
+    return access;
+  }
   if (mailbox.provider === "gmail" && mailbox.refresh_token_ciphertext) {
     try {
-      // Always try refresh for long-running jobs if we have a refresh token
       const refresh = decryptSecret(mailbox.refresh_token_ciphertext);
       const fresh = await refreshGmailAccessToken(refresh);
       access = fresh;
@@ -43,7 +47,43 @@ async function resolveAccessToken(mailbox: MailboxRow): Promise<string> {
       console.warn("Gmail token refresh failed; using stored access token", err);
     }
   }
+  if (mailbox.provider === "microsoft" && mailbox.refresh_token_ciphertext) {
+    try {
+      const { refreshMicrosoftAccessToken } = await import(
+        "../providers/microsoft.js"
+      );
+      const refresh = decryptSecret(mailbox.refresh_token_ciphertext);
+      const fresh = await refreshMicrosoftAccessToken(refresh);
+      access = fresh.accessToken;
+      await pool.query(
+        `UPDATE mailbox_connections
+         SET access_token_ciphertext = $1,
+             refresh_token_ciphertext = COALESCE($2, refresh_token_ciphertext),
+             updated_at = NOW(), status = 'active'
+         WHERE id = $3`,
+        [
+          encryptSecret(fresh.accessToken),
+          fresh.refreshToken ? encryptSecret(fresh.refreshToken) : null,
+          mailbox.id,
+        ],
+      );
+    } catch (err) {
+      console.warn("Microsoft token refresh failed; using stored access token", err);
+    }
+  }
   return access;
+}
+
+function connectionMeta(mailbox: MailboxRow): Record<string, unknown> {
+  const meta =
+    mailbox.connection_meta && typeof mailbox.connection_meta === "object"
+      ? { ...mailbox.connection_meta }
+      : {};
+  if (mailbox.provider === "imap") {
+    meta.user = meta.user ?? mailbox.email_address;
+    meta.email = mailbox.email_address;
+  }
+  return meta;
 }
 
 export async function processScanJob(jobId: string): Promise<void> {
@@ -75,6 +115,7 @@ export async function processScanJob(jobId: string): Promise<void> {
   try {
     const provider = getProvider(mailbox.provider);
     const accessToken = await resolveAccessToken(mailbox);
+    const meta = connectionMeta(mailbox);
 
     const days = job.window_start
       ? Math.max(
@@ -86,10 +127,14 @@ export async function processScanJob(jobId: string): Promise<void> {
         )
       : 7;
 
-    const messageIds = await provider.listMessageIds(accessToken, {
-      days,
-      query: job.query,
-    });
+    const messageIds = await provider.listMessageIds(
+      accessToken,
+      {
+        days,
+        query: job.query,
+      },
+      meta,
+    );
 
     let candidatesCreated = 0;
 
@@ -108,7 +153,7 @@ export async function processScanJob(jobId: string): Promise<void> {
     );
 
     for (const messageId of messageIds) {
-      const email = await provider.fetchMessage(accessToken, messageId);
+      const email = await provider.fetchMessage(accessToken, messageId, meta);
       if (!isImportantEmail(email)) {
         continue;
       }

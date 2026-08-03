@@ -331,6 +331,7 @@ function Dashboard({
   const [candidates, setCandidates] = useState<Candidate[]>([]);
   const [entities, setEntities] = useState<Entity[]>([]);
   const [gmailReady, setGmailReady] = useState(false);
+  const [microsoftReady, setMicrosoftReady] = useState(false);
   const [selectedMailbox, setSelectedMailbox] = useState("");
   const [days, setDays] = useState(7);
   const [queryPreview, setQueryPreview] = useState(buildImportantGmailQuery(7));
@@ -341,10 +342,28 @@ function Dashboard({
   const [exportJson, setExportJson] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [showOfflineSample, setShowOfflineSample] = useState(false);
+  const [showImapForm, setShowImapForm] = useState(false);
+  const [imapForm, setImapForm] = useState({
+    email: "",
+    password: "",
+    host: "",
+    port: "993",
+  });
 
   const activeMailbox = useMemo(
     () => mailboxes.find((m) => m.id === selectedMailbox),
     [mailboxes, selectedMailbox],
+  );
+  const realMailboxes = useMemo(
+    () =>
+      mailboxes.filter(
+        (m) =>
+          m.status === "active" &&
+          (m.provider === "gmail" ||
+            m.provider === "microsoft" ||
+            m.provider === "imap"),
+      ),
+    [mailboxes],
   );
   const gmailMailboxes = useMemo(
     () => mailboxes.filter((m) => m.provider === "gmail" && m.status === "active"),
@@ -352,9 +371,10 @@ function Dashboard({
   );
   const scanMailboxes = useMemo(() => {
     const active = mailboxes.filter((m) => m.status === "active");
-    const gmail = active.filter((m) => m.provider === "gmail");
-    if (gmail.length > 0) return gmail;
-    // Sample inbox only appears in the scan list when the offline panel is open
+    const real = active.filter((m) =>
+      ["gmail", "microsoft", "imap"].includes(m.provider),
+    );
+    if (real.length > 0) return real;
     if (showOfflineSample) {
       return active.filter((m) => m.provider === "fixture");
     }
@@ -365,8 +385,25 @@ function Dashboard({
     list: Mailbox[],
     currentId: string,
   ): string {
-    const gmail = list.find((m) => m.provider === "gmail" && m.status === "active");
-    if (gmail) return gmail.id;
+    const real = list.find(
+      (m) =>
+        m.status === "active" &&
+        ["gmail", "microsoft", "imap"].includes(m.provider),
+    );
+    if (real) {
+      if (
+        currentId &&
+        list.some(
+          (m) =>
+            m.id === currentId &&
+            m.status === "active" &&
+            ["gmail", "microsoft", "imap"].includes(m.provider),
+        )
+      ) {
+        return currentId;
+      }
+      return real.id;
+    }
     if (
       currentId &&
       list.some(
@@ -384,6 +421,8 @@ function Dashboard({
 
   function mailboxLabel(m: Mailbox): string {
     if (m.provider === "gmail") return `Gmail · ${m.email_address}`;
+    if (m.provider === "microsoft") return `Outlook · ${m.email_address}`;
+    if (m.provider === "imap") return `IMAP · ${m.email_address}`;
     if (m.provider === "fixture") return `Sample inbox (offline) · ${m.email_address}`;
     return `${m.provider} · ${m.email_address}`;
   }
@@ -402,6 +441,9 @@ function Dashboard({
     setEntities(ents.entities);
     setGmailReady(
       Boolean(providers.providers.find((p) => p.id === "gmail")?.configured),
+    );
+    setMicrosoftReady(
+      Boolean(providers.providers.find((p) => p.id === "microsoft")?.configured),
     );
     setSelectedMailbox((current) => pickPreferredMailbox(mb.mailboxes, current));
   }
@@ -451,9 +493,9 @@ function Dashboard({
         <div className="brand">
           <h1>Email Task Agent</h1>
           <p>
-            Scan your real Gmail inbox for compliance actions, review evidence,
-            then export approved items for CiviSight. Tasks are never created
-            without your approval.
+            Scan your mailbox for compliance actions, review evidence, then
+            export approved items for CiviSight. Works with Gmail, Outlook, and
+            any IMAP email. Tasks are never created without your approval.
           </p>
         </div>
         <div className="row">
@@ -476,40 +518,7 @@ function Dashboard({
 
       <div className="grid grid-2">
         <section className="panel stack">
-          <h2>1. Connect Gmail</h2>
-
-          {!gmailReady && (
-            <div className="banner error">
-              Gmail OAuth is not configured yet. Add your Google Cloud OAuth
-              Client ID and Client Secret to <code>.env</code>, then restart the
-              app:
-              <ol style={{ margin: "8px 0 0", paddingLeft: "1.2rem" }}>
-                <li>
-                  Create an OAuth client at{" "}
-                  <a
-                    href="https://console.cloud.google.com/apis/credentials"
-                    target="_blank"
-                    rel="noreferrer"
-                  >
-                    Google Cloud Credentials
-                  </a>
-                </li>
-                <li>Enable the Gmail API for that project</li>
-                <li>
-                  Application type: <strong>Web application</strong>
-                </li>
-                <li>
-                  Authorized redirect URI:{" "}
-                  <code>http://localhost:4000/api/oauth/gmail/callback</code>
-                </li>
-                <li>
-                  Set <code>GOOGLE_CLIENT_ID</code> and{" "}
-                  <code>GOOGLE_CLIENT_SECRET</code> in <code>.env</code>
-                </li>
-              </ol>
-              Paste those two values here in chat and I can wire them in for you.
-            </div>
-          )}
+          <h2>1. Connect mailbox</h2>
 
           <div className="row">
             <button
@@ -529,22 +538,146 @@ function Dashboard({
                 }
               }}
             >
-              {gmailMailboxes.length
-                ? "Reconnect Gmail (readonly)"
-                : "Connect Gmail (readonly)"}
+              Connect Gmail
             </button>
-            <span className="pill muted">scope: gmail.readonly</span>
+            <button
+              className="btn secondary"
+              type="button"
+              disabled={busy || !microsoftReady}
+              title={
+                microsoftReady
+                  ? "Microsoft Graph Mail.Read"
+                  : "Set MICROSOFT_CLIENT_ID/SECRET, or use Any email (IMAP)"
+              }
+              onClick={async () => {
+                setBusy(true);
+                setError(null);
+                try {
+                  const { url } = await client.startMicrosoftOAuth();
+                  window.location.href = url;
+                } catch (err) {
+                  setError(err instanceof Error ? err.message : "OAuth failed");
+                } finally {
+                  setBusy(false);
+                }
+              }}
+            >
+              Connect Outlook
+            </button>
+            <button
+              className="btn secondary"
+              type="button"
+              disabled={busy}
+              onClick={() => setShowImapForm((v) => !v)}
+            >
+              {showImapForm ? "Hide IMAP form" : "Any email (IMAP)"}
+            </button>
           </div>
 
-          {gmailMailboxes.length > 0 ? (
+          {showImapForm && (
+            <div className="stack panel" style={{ boxShadow: "none" }}>
+              <p className="meta" style={{ margin: 0 }}>
+                Works with Outlook, Yahoo, iCloud, Zoho, custom domains, and
+                Gmail via an app password. Password is encrypted at rest.
+              </p>
+              <label>
+                Email address
+                <input
+                  type="email"
+                  value={imapForm.email}
+                  onChange={async (e) => {
+                    const email = e.target.value;
+                    setImapForm((f) => ({ ...f, email }));
+                    if (email.includes("@")) {
+                      try {
+                        const res = await client.inferImapSettings(email);
+                        if (res.inferred) {
+                          setImapForm((f) => ({
+                            ...f,
+                            email,
+                            host: res.inferred!.host,
+                            port: String(res.inferred!.port),
+                          }));
+                        }
+                      } catch {
+                        // ignore inference errors while typing
+                      }
+                    }
+                  }}
+                  placeholder="you@company.com"
+                  required
+                />
+              </label>
+              <label>
+                Password / app password
+                <input
+                  type="password"
+                  value={imapForm.password}
+                  onChange={(e) =>
+                    setImapForm((f) => ({ ...f, password: e.target.value }))
+                  }
+                  required
+                />
+              </label>
+              <div className="row">
+                <label style={{ flex: 2 }}>
+                  IMAP host
+                  <input
+                    value={imapForm.host}
+                    onChange={(e) =>
+                      setImapForm((f) => ({ ...f, host: e.target.value }))
+                    }
+                    placeholder="imap.example.com"
+                  />
+                </label>
+                <label style={{ flex: 1 }}>
+                  Port
+                  <input
+                    value={imapForm.port}
+                    onChange={(e) =>
+                      setImapForm((f) => ({ ...f, port: e.target.value }))
+                    }
+                  />
+                </label>
+              </div>
+              <button
+                className="btn"
+                type="button"
+                disabled={busy}
+                onClick={async () => {
+                  setBusy(true);
+                  setError(null);
+                  try {
+                    const res = await client.connectImap({
+                      email: imapForm.email,
+                      password: imapForm.password,
+                      host: imapForm.host || undefined,
+                      port: Number(imapForm.port) || undefined,
+                    });
+                    setMessage(`Connected ${res.email} over IMAP.`);
+                    setShowImapForm(false);
+                    setImapForm({ email: "", password: "", host: "", port: "993" });
+                    await refresh();
+                  } catch (err) {
+                    setError(err instanceof Error ? err.message : "IMAP failed");
+                  } finally {
+                    setBusy(false);
+                  }
+                }}
+              >
+                Connect IMAP mailbox
+              </button>
+            </div>
+          )}
+
+          {realMailboxes.length > 0 ? (
             <div className="banner">
               Connected:{" "}
-              {gmailMailboxes.map((m) => m.email_address).join(", ")}
+              {realMailboxes.map((m) => mailboxLabel(m)).join(" · ")}
             </div>
           ) : (
             <div className="banner">
-              No Gmail connected yet. Finish Google sign-in (including 2-step
-              verification if prompted), then you can scan that mailbox.
+              Connect Gmail, Outlook, or any IMAP mailbox to scan real email.
             </div>
           )}
 
@@ -618,7 +751,7 @@ function Dashboard({
 
           {gmailMailboxes.length === 0 && scanMailboxes.length === 0 ? (
             <div className="empty">
-              Connect Gmail above first. The scan target will appear here
+              Connect a mailbox above first. The scan target will appear here
               automatically.
             </div>
           ) : (
@@ -676,8 +809,9 @@ function Dashboard({
             disabled={
               !selectedMailbox ||
               busy ||
-              (activeMailbox?.provider !== "gmail" &&
-                activeMailbox?.provider !== "fixture")
+              !["gmail", "microsoft", "imap", "fixture"].includes(
+                activeMailbox?.provider ?? "",
+              )
             }
             onClick={async () => {
               setBusy(true);
@@ -702,7 +836,7 @@ function Dashboard({
 
           <h3>Scan history</h3>
           {jobs.length === 0 ? (
-            <div className="empty">No scans yet. Connect Gmail, then start a scan.</div>
+            <div className="empty">No scans yet. Connect a mailbox, then start a scan.</div>
           ) : (
             <table className="table">
               <thead>
@@ -775,7 +909,7 @@ function Dashboard({
           <div className="candidate-list">
             {candidates.length === 0 ? (
               <div className="empty">
-                No candidates yet. After a Gmail scan finishes, actionable emails
+                No candidates yet. After a mailbox scan finishes, actionable emails
                 appear here for review.
               </div>
             ) : (

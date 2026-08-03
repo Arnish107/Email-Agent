@@ -28,7 +28,7 @@ This is **not** a patch to CiviSight. It is an inspectable local implementation 
 - API: Node.js, Express, TypeScript, Postgres (PGlite locally by default; Docker Postgres optional)
 - Jobs: database-backed queue + in-process worker (BullMQ-ready shape later)
 - Web: React + Vite
-- Providers: Gmail first, fixture provider for local demo, Microsoft scaffolded
+- Providers: Gmail OAuth, Microsoft/Outlook OAuth, generic IMAP (any mailbox), fixture provider for local demo
 
 ## Quick start
 

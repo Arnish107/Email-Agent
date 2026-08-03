@@ -37,7 +37,9 @@ scansRouter.post("/", async (req, res) => {
     customQuery?.trim() ||
     (mailbox.provider === "gmail"
       ? buildImportantGmailQuery(days)
-      : `important_last_${days}_days`);
+      : mailbox.provider === "microsoft"
+        ? `important_last_${days}_days`
+        : `important_last_${days}_days`);
 
   const id = nanoid();
   await pool.query(

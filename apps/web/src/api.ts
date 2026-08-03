@@ -100,8 +100,32 @@ export const client = {
     }),
   disconnectMailbox: (id: string) =>
     api<{ ok: boolean }>(`/api/mailboxes/${id}`, { method: "DELETE" }),
+  inferImapSettings: (email: string) =>
+    api<{
+      email: string;
+      inferred: { host: string; port: number; secure: boolean } | null;
+    }>("/api/mailboxes/imap/settings", {
+      method: "POST",
+      body: JSON.stringify({ email }),
+    }),
+  connectImap: (body: {
+    email: string;
+    password: string;
+    host?: string;
+    port?: number;
+    secure?: boolean;
+  }) =>
+    api<{ mailboxId: string; email: string; provider: string }>(
+      "/api/mailboxes/imap/connect",
+      {
+        method: "POST",
+        body: JSON.stringify(body),
+      },
+    ),
   startGmailOAuth: () =>
     api<{ url: string }>("/api/mailboxes/oauth/gmail/start"),
+  startMicrosoftOAuth: () =>
+    api<{ url: string }>("/api/mailboxes/oauth/microsoft/start"),
   startScan: (mailboxId: string, days: number, query?: string) =>
     api<{ jobId: string; query: string }>("/api/scans", {
       method: "POST",
