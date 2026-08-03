@@ -1,0 +1,32 @@
+[
+  {
+    "id": "civisight-entity-troup",
+    "name": "Troup County",
+    "type": "county",
+    "code": "troup"
+  },
+  {
+    "id": "civisight-entity-fulton",
+    "name": "Fulton County",
+    "type": "county",
+    "code": "fulton"
+  },
+  {
+    "id": "civisight-entity-dekalb",
+    "name": "DeKalb County",
+    "type": "county",
+    "code": "dekalb"
+  },
+  {
+    "id": "civisight-entity-atlanta",
+    "name": "City of Atlanta",
+    "type": "city",
+    "code": "atlanta"
+  },
+  {
+    "id": "civisight-entity-gwinnett",
+    "name": "Gwinnett County",
+    "type": "county",
+    "code": "gwinnett"
+  }
+]

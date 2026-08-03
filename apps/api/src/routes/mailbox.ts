@@ -1,0 +1,230 @@
+import { Router } from "express";
+import { nanoid } from "nanoid";
+import { writeAuditLog } from "../audit/log.js";
+import { requireAuth } from "../auth/session.js";
+import { config, gmailConfigured } from "../config.js";
+import { encryptSecret } from "../crypto/tokens.js";
+import { pool } from "../db/pool.js";
+import {
+  exchangeGmailCode,
+  getGmailAuthUrl,
+  gmailMessageDeepLink,
+} from "../providers/gmail.js";
+
+export const mailboxRouter = Router();
+
+mailboxRouter.use(requireAuth);
+
+mailboxRouter.get("/", async (req, res) => {
+  const result = await pool.query(
+    `SELECT id, provider, email_address, scope, status, last_scan_at, created_at, updated_at
+     FROM mailbox_connections
+     WHERE user_id = $1
+     ORDER BY created_at DESC`,
+    [req.user!.id],
+  );
+  res.json({ mailboxes: result.rows });
+});
+
+mailboxRouter.get("/providers", async (_req, res) => {
+  res.json({
+    providers: [
+      {
+        id: "gmail",
+        label: "Gmail",
+        scope: "gmail.readonly",
+        configured: gmailConfigured(),
+      },
+      {
+        id: "fixture",
+        label: "Fixture emails (local demo)",
+        scope: "none",
+        configured: config.enableFixtureProvider,
+      },
+      {
+        id: "microsoft",
+        label: "Microsoft Graph",
+        scope: "Mail.Read",
+        configured: false,
+        note: "Scaffolded for later; not enabled in this prototype build.",
+      },
+    ],
+  });
+});
+
+mailboxRouter.post("/fixture/connect", async (req, res) => {
+  if (!config.enableFixtureProvider) {
+    res.status(403).json({ error: "Fixture provider disabled" });
+    return;
+  }
+
+  const email = `fixtures+${req.user!.id.slice(0, 6)}@local.test`;
+  const existing = await pool.query(
+    `SELECT id FROM mailbox_connections
+     WHERE user_id = $1 AND provider = 'fixture' AND status = 'active'`,
+    [req.user!.id],
+  );
+  if (existing.rows[0]) {
+    res.json({ mailboxId: existing.rows[0].id, email });
+    return;
+  }
+
+  const id = nanoid();
+  await pool.query(
+    `INSERT INTO mailbox_connections (
+      id, user_id, provider, email_address, access_token_ciphertext,
+      refresh_token_ciphertext, scope, status
+    ) VALUES ($1,$2,'fixture',$3,$4,NULL,'fixture:local','active')`,
+    [id, req.user!.id, email, encryptSecret("fixture-token")],
+  );
+
+  await writeAuditLog({
+    userId: req.user!.id,
+    mailboxConnectionId: id,
+    eventType: "mailbox_connected",
+    details: { provider: "fixture", email },
+  });
+
+  res.status(201).json({ mailboxId: id, email });
+});
+
+mailboxRouter.get("/oauth/gmail/start", async (req, res) => {
+  if (!gmailConfigured()) {
+    res.status(400).json({
+      error:
+        "Gmail OAuth is not configured. Set GOOGLE_CLIENT_ID and GOOGLE_CLIENT_SECRET.",
+    });
+    return;
+  }
+
+  const state = nanoid(32);
+  const expires = new Date(Date.now() + 10 * 60 * 1000);
+  await pool.query(
+    `INSERT INTO oauth_states (state, user_id, provider, expires_at)
+     VALUES ($1, $2, 'gmail', $3)`,
+    [state, req.user!.id, expires],
+  );
+
+  const url = getGmailAuthUrl(state);
+  res.json({ url });
+});
+
+mailboxRouter.delete("/:id", async (req, res) => {
+  const result = await pool.query(
+    `UPDATE mailbox_connections
+     SET status = 'revoked', updated_at = NOW(),
+         access_token_ciphertext = $1, refresh_token_ciphertext = NULL
+     WHERE id = $2 AND user_id = $3
+     RETURNING id`,
+    [encryptSecret("revoked"), req.params.id, req.user!.id],
+  );
+  if (!result.rows[0]) {
+    res.status(404).json({ error: "Mailbox not found" });
+    return;
+  }
+  await writeAuditLog({
+    userId: req.user!.id,
+    mailboxConnectionId: req.params.id,
+    eventType: "mailbox_revoked",
+    details: {},
+  });
+  res.json({ ok: true });
+});
+
+export const oauthRouter = Router();
+
+oauthRouter.get("/gmail/callback", async (req, res) => {
+  const code = String(req.query.code ?? "");
+  const state = String(req.query.state ?? "");
+  const error = req.query.error;
+
+  if (error) {
+    res.redirect(`${config.webBaseUrl}/?oauth=error&message=${encodeURIComponent(String(error))}`);
+    return;
+  }
+
+  if (!code || !state) {
+    res.status(400).send("Missing code or state");
+    return;
+  }
+
+  const stateRes = await pool.query<{
+    user_id: string;
+    expires_at: Date;
+  }>(
+    `SELECT user_id, expires_at FROM oauth_states WHERE state = $1 AND provider = 'gmail'`,
+    [state],
+  );
+  const row = stateRes.rows[0];
+  await pool.query("DELETE FROM oauth_states WHERE state = $1", [state]);
+
+  if (!row || new Date(row.expires_at) < new Date()) {
+    res.status(400).send("Invalid or expired OAuth state");
+    return;
+  }
+
+  try {
+    const tokens = await exchangeGmailCode(code);
+    const id = nanoid();
+
+    // Upsert by user+provider+email
+    const existing = await pool.query<{ id: string }>(
+      `SELECT id FROM mailbox_connections
+       WHERE user_id = $1 AND provider = 'gmail' AND email_address = $2`,
+      [row.user_id, tokens.email],
+    );
+
+    if (existing.rows[0]) {
+      await pool.query(
+        `UPDATE mailbox_connections
+         SET access_token_ciphertext = $1,
+             refresh_token_ciphertext = COALESCE($2, refresh_token_ciphertext),
+             scope = $3, status = 'active', updated_at = NOW()
+         WHERE id = $4`,
+        [
+          encryptSecret(tokens.accessToken),
+          tokens.refreshToken ? encryptSecret(tokens.refreshToken) : null,
+          tokens.scope,
+          existing.rows[0].id,
+        ],
+      );
+      await writeAuditLog({
+        userId: row.user_id,
+        mailboxConnectionId: existing.rows[0].id,
+        eventType: "mailbox_connected",
+        details: { provider: "gmail", email: tokens.email, refreshed: true },
+      });
+    } else {
+      await pool.query(
+        `INSERT INTO mailbox_connections (
+          id, user_id, provider, email_address, access_token_ciphertext,
+          refresh_token_ciphertext, scope, status
+        ) VALUES ($1,$2,'gmail',$3,$4,$5,$6,'active')`,
+        [
+          id,
+          row.user_id,
+          tokens.email,
+          encryptSecret(tokens.accessToken),
+          tokens.refreshToken ? encryptSecret(tokens.refreshToken) : null,
+          tokens.scope,
+        ],
+      );
+      await writeAuditLog({
+        userId: row.user_id,
+        mailboxConnectionId: id,
+        eventType: "mailbox_connected",
+        details: { provider: "gmail", email: tokens.email },
+      });
+    }
+
+    res.redirect(`${config.webBaseUrl}/?oauth=success`);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "OAuth failed";
+    res.redirect(`${config.webBaseUrl}/?oauth=error&message=${encodeURIComponent(message)}`);
+  }
+});
+
+export function sourceDeepLink(provider: string, messageId: string): string | null {
+  if (provider === "gmail") return gmailMessageDeepLink(messageId);
+  return null;
+}
